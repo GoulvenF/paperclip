@@ -1427,6 +1427,7 @@ describe.sequential("issue comment reopen routes", () => {
         authorizationReason: "allow_board_actor",
         clientRequestId: undefined,
         mirrorToSlack: true,
+        humanDirectedByUserId: "local-board",
         presentation: {
           kind: "system_notice",
           tone: "warning",
