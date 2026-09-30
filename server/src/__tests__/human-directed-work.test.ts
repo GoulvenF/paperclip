@@ -129,11 +129,28 @@ const support = await getEmbeddedPostgresTestSupport();
       await held;
     });
     await ready;
-    // Start the competing update while the comment transaction still owns the row.
-    const reassignment = db.update(issues).set({ assigneeAgentId: f.other.id })
-      .where(eq(issues.id, issue.id)).execute();
-    release();
-    await Promise.all([commentWrite, reassignment]);
+    let started!: (pid: number) => void;
+    const waiter = new Promise<number>((resolve) => { started = resolve; });
+    const reassignment = db.transaction(async (tx) => {
+      const [backend] = await tx.execute(sql`select pg_backend_pid() as pid`);
+      started(Number(backend.pid));
+      await tx.update(issues).set({ assigneeAgentId: f.other.id }).where(eq(issues.id, issue.id));
+    });
+    try {
+      const pid = await waiter;
+      const deadline = Date.now() + 5_000;
+      let blocked = false;
+      // Observe an actual PostgreSQL lock wait, not merely two queued promises.
+      while (Date.now() < deadline) {
+        const [state] = await db.execute(sql`select cardinality(pg_blocking_pids(${pid}::int)) > 0 as blocked`);
+        if (state.blocked === true) { blocked = true; break; }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(blocked).toBe(true);
+    } finally {
+      release();
+      await Promise.all([commentWrite, reassignment]);
+    }
     expect(await db.select().from(issueHumanWorkGrants).where(eq(issueHumanWorkGrants.issueId, issue.id))).toHaveLength(0);
     await issueService(db).addComment(issue.id, "New instruction", { userId: "owner" }, { humanDirectedByUserId: "owner" });
     expect(await db.select().from(issueHumanWorkGrants).where(eq(issueHumanWorkGrants.issueId, issue.id)))
