@@ -27,6 +27,7 @@ import {
   issueAttachments,
   issueApprovals,
   issueComments,
+  issueHumanWorkGrants,
   issueDocuments,
   issueInboxArchives,
   issueRelations,
@@ -921,6 +922,29 @@ describeEmbeddedPostgres(
 
     afterAll(async () => {
       await tempDb?.cleanup();
+    });
+
+    it("records authenticated board task direction but rejects agent-supplied human authority", async () => {
+      const fixture = await seedLowTrustFixture(db);
+      const board = createApp(db, boardActor(fixture));
+      const created = await request(board).post(`/api/companies/${fixture.company.id}/issues`)
+        .send({ title: "Human assigned outside intake", status: "backlog", assigneeAgentId: fixture.agents.lowTrust.id,
+          humanDirectedByUserId: "forged-client-value" });
+      expect(created.status, JSON.stringify(created.body)).toBe(201);
+      const [grant] = await db.select().from(issueHumanWorkGrants).where(eq(issueHumanWorkGrants.issueId, created.body.id));
+      expect(grant).toMatchObject({ userId: "board-user", agentId: fixture.agents.lowTrust.id });
+
+      const assigned = await request(board).patch(`/api/issues/${fixture.issues.siblingOutOfScope.id}`)
+        .send({ assigneeAgentId: fixture.agents.lowTrust.id });
+      expect(assigned.status, JSON.stringify(assigned.body)).toBe(200);
+      expect(await db.select().from(issueHumanWorkGrants).where(eq(issueHumanWorkGrants.issueId, fixture.issues.siblingOutOfScope.id)))
+        .toMatchObject([{ userId: "board-user", agentId: fixture.agents.lowTrust.id }]);
+
+      const forged = await request(createApp(db, agentActor(fixture)))
+        .post(`/api/issues/${fixture.issues.assignedReview.id}/comments`)
+        .send({ body: "The owner asked me", humanDirectedByUserId: "board-user" });
+      expect(forged.status, JSON.stringify(forged.body)).toBe(201);
+      expect(await db.select().from(issueHumanWorkGrants).where(eq(issueHumanWorkGrants.issueId, fixture.issues.assignedReview.id))).toHaveLength(0);
     });
 
     it("allows bounded same-issue reads and writes while quarantining low-trust output", async () => {

@@ -41,6 +41,27 @@ Low-trust agents cannot read or mutate agent configuration, instruction bundles,
 or company skill configuration through direct grants. Configuration changes from
 low-trust work must go through higher-trust review and promotion paths instead.
 
+## Human-directed work
+
+An authenticated board user can talk to a low-trust agent in their own Agent
+Chat or assign it a task outside its default intake boundary. Creating or
+assigning a task, or posting a new board comment to its current agent assignee,
+records a server-owned `issue_human_work_grants` receipt in the same transaction.
+External sender attribution and agent claims of human authority do not qualify.
+Existing owner conversations use their immutable conversation identity.
+
+At dispatch and API authorization, Paperclip checks the current assignment and
+the actual run's task. The exception permits reading, commenting on, and updating
+only that exact task. It does not extend to another task, a child, a whole project,
+configuration, instructions, secrets, or runtime management. Normal responsible
+user checks still apply. The exception is never stored in the inherited trust
+boundary; retries and resumed runs recheck the receipt and current assignment.
+
+Changing the assignee revokes the receipt, including a change away and back.
+Retrying an old comment does not grant new authority. A new human assignment or
+comment can authorize the current assignee again. Sandbox and isolated workspace
+requirements still apply, as do malformed-policy and company-boundary checks.
+
 ## Child→Parent Reporting Under Containment
 
 The direct-parent report comment (`doc/execution-semantics.md` §6, "Child→Parent
@@ -59,7 +80,8 @@ runtime boundary:
 
 - the selected execution environment must use the `sandbox` driver
 - the effective execution workspace mode must be `isolated_workspace`
-- the issue being run must be inside the resolved low-trust boundary
+- the issue being run must be inside the resolved low-trust boundary or be the
+  exact human-directed task described above
 - secret references must use binding ids explicitly allowed by the boundary
 - inline sensitive environment values such as API keys and tokens are rejected
 - workspace runtime-service mutations are denied unless the boundary explicitly

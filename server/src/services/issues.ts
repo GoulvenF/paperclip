@@ -1,4 +1,5 @@
 import { recordChatHandoff, recordChatCompletion, existingChatCompletionReply, acknowledgeChatCompletionReply } from "./chat-completion-delivery.js";
+import { recordHumanDirectedWork } from "./human-directed-work.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { externalConversationStateSql, nonIdleSlackIssueCondition, resumeSlackConversation } from "./slack-conversation-state.js";
@@ -1939,6 +1940,8 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId" | "title" |
   watchdog?: { agentId: string; instructions?: string | null } | null;
   watchdogActorRunId?: string | null;
   actorRunId?: string | null;
+  /** Server-only, authenticated board instruction; attribution alone is insufficient. */
+  humanDirectedByUserId?: string | null;
   actorResponsibleUserId?: string | null;
   trustExplicitResponsibleUserId?: boolean;
   idempotencyKey?: string | null;
@@ -9750,6 +9753,7 @@ export function issueService(db: Db) {
         actorRunId,
         actorResponsibleUserId,
         trustExplicitResponsibleUserId,
+        humanDirectedByUserId,
         idempotencyKey: rawIdempotencyKey,
         allowDuplicate,
         onDeduplicated,
@@ -10178,6 +10182,7 @@ export function issueService(db: Db) {
         );
 
         const [issue] = await tx.insert(issues).values(values).returning();
+        await recordHumanDirectedWork(tx, issue, { userId: humanDirectedByUserId, agentId: issueData.createdByAgentId });
         await recordChatHandoff(tx, issue, actorRunId);
         if (idempotencyKey) {
           await tx.insert(issueCreateIdempotencyKeys).values({
@@ -10583,6 +10588,7 @@ export function issueService(db: Db) {
         actorRunId?: string | null;
         actorRunStopId?: string | null;
         actorUserId?: string | null;
+        humanDirectedByUserId?: string | null;
         companyGuard?: string;
       },
       dbOrTx: any = db,
@@ -10630,6 +10636,7 @@ export function issueService(db: Db) {
         actorRunId,
         actorRunStopId,
         actorUserId,
+        humanDirectedByUserId,
         companyGuard,
         ...issueData
       } = data;
@@ -10967,6 +10974,9 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
+        if (issueData.assigneeAgentId !== undefined) {
+          await recordHumanDirectedWork(tx, updated, { userId: humanDirectedByUserId, agentId: actorAgentId });
+        }
         await recordChatCompletion(tx, receiptExisting, updated);
         // An operator explicitly choosing a disposition owns that decision,
         // including choosing In Review while the conversation is Idle.
@@ -12142,6 +12152,8 @@ export function issueService(db: Db) {
         sourceTrust?: typeof issueComments.$inferInsert.sourceTrust;
         createdAt?: Date | string | null;
         clientRequestId?: string;
+        /** Server-only authenticated board direction, never sender attribution. */
+        humanDirectedByUserId?: string | null;
         /** Server-only: authenticated Paperclip messages also belong in the Slack thread. */
         mirrorToSlack?: boolean;
       },
@@ -12169,13 +12181,13 @@ export function issueService(db: Db) {
       // The query below locks human comments on caller-owned transactions too,
       // sharing the fence with both question creation and Slack settlement.
       const issueQuery = dbOrTx
-        .select({ companyId: issues.companyId, conversationAgentId: issues.conversationAgentId })
+        .select({ companyId: issues.companyId, conversationAgentId: issues.conversationAgentId, assigneeAgentId: issues.assigneeAgentId })
         .from(issues)
         .where(eq(issues.id, issueId));
       // Caller-owned transactions (including chat and review comments) must
       // serialize with question creation before inserting the human comment.
       const issue = await (actor.userId || (actor.runId && dbOrTx !== db) ? issueQuery.for("update") : issueQuery)
-        .then((rows: Array<{ companyId: string; conversationAgentId: string | null }>) => rows[0] ?? null);
+        .then((rows: Array<{ companyId: string; conversationAgentId: string | null; assigneeAgentId: string | null }>) => rows[0] ?? null);
 
       if (!issue) throw notFound("Issue not found");
 
@@ -12443,6 +12455,7 @@ export function issueService(db: Db) {
           .returning();
       }
       if (!comment) throw new Error("Failed to create issue comment");
+      await recordHumanDirectedWork(dbOrTx, { ...issue, id: issueId }, { userId: options?.humanDirectedByUserId, agentId: actor.agentId });
       if (options?.completionReply && actor.agentId && createdByRunId) await acknowledgeChatCompletionReply(dbOrTx, createdByRunId, comment.id);
 
       const boundAttachments: Array<{

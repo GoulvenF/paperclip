@@ -1,6 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import { conflict } from "../errors.js";
+import { withHumanDirectedWork } from "./human-directed-work.js";
 import {
   resolveCoreTrustPreset,
   type ResolveCoreTrustPresetInput,
@@ -61,6 +62,10 @@ export async function resolveAndRetainRunTrustPreset(
         updatedAt: new Date(),
       })
       .where(scope);
-    return { trustPreset, executionPolicy };
+    const runIssueId = run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId;
+    return { trustPreset: await withHumanDirectedWork(tx, trustPreset, {
+      companyId: input.companyId, agentId: input.agentId,
+      issueId: typeof runIssueId === "string" ? runIssueId : null,
+    }), executionPolicy };
   });
 }

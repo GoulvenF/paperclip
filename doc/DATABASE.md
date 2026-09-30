@@ -43,6 +43,12 @@ This mode is ideal for local development and one-command installs.
 
 Docker note: the Docker quickstart image also uses embedded PostgreSQL by default. Persist `/paperclip` to keep DB state across container restarts (see `doc/DOCKER.md`).
 
+Human-directed low-trust work uses `issue_human_work_grants`, keyed by task with
+company, current agent, authorizing user, and timestamp. Receipts commit with the
+human write. A database trigger deletes them on assignee changes. The migration
+does not infer authority from historical creator or comment attribution; existing
+Agent Chat conversations use their immutable human/agent identity instead.
+
 ## 2. Local PostgreSQL (Docker)
 
 For a full PostgreSQL server locally, use the included Docker Compose setup:

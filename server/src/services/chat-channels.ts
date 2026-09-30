@@ -30651,7 +30651,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             conversation.issueId,
             body,
             { userId },
-            { authorType: "user", attachmentIds },
+            { authorType: "user", attachmentIds, humanDirectedByUserId: userId },
             inner,
           ),
         );

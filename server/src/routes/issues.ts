@@ -11771,6 +11771,7 @@ export function issueRoutes(
         null;
       const createInput = {
         ...createBody,
+        humanDirectedByUserId: req.actor.type === "board" ? req.actor.userId : null,
         ...(taskBridgeOriginForActor(req) ?? {}),
         id: issueId,
         originRunId: createBody.originRunId ?? actor.runId,
@@ -13486,6 +13487,7 @@ export function issueRoutes(
       const postCommitIssueActions: IssuePostCommitAction[] = [];
       const issueUpdateData = {
         ...updateFields,
+        humanDirectedByUserId: req.actor.type === "board" ? req.actor.userId : null,
         actorAgentId: actor.agentId ?? null,
         actorRunId: actor.agentId ? actor.runId : null,
         actorRunStopId: actor.agentId && interruptedRunId === actor.runId ? issueMutationStopId : null,
@@ -13668,6 +13670,7 @@ export function issueRoutes(
                   attachmentIds: commentAttachmentIds,
                   clientRequestId: actor.actorType === "user" ? commentClientRequestId : undefined,
                   mirrorToSlack: actor.actorType === "user",
+                  humanDirectedByUserId: req.actor.type === "board" ? req.actor.userId : null,
                   authorizationReason: issueMutationAuthorizationReason,
                   sourceTrust: transactionalCommentSourceTrust,
                 },
@@ -14274,6 +14277,7 @@ export function issueRoutes(
             authorizationReason: issueMutationAuthorizationReason,
             clientRequestId: actor.actorType === "user" ? commentClientRequestId : undefined,
             mirrorToSlack: actor.actorType === "user",
+            humanDirectedByUserId: req.actor.type === "board" ? req.actor.userId : null,
             sourceTrust: await sourceTrustForActorWrite(issue, actor),
           },
         );
@@ -17625,6 +17629,7 @@ export function issueRoutes(
           attachmentIds: req.body.attachmentIds,
           clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
           mirrorToSlack: actor.actorType === "user",
+          humanDirectedByUserId: req.actor.type === "board" ? req.actor.userId : null,
           sourceTrust,
         };
         let txResult: {
@@ -17738,6 +17743,7 @@ export function issueRoutes(
           attachmentIds: req.body.attachmentIds,
           clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
           mirrorToSlack: actor.actorType === "user",
+          humanDirectedByUserId: req.actor.type === "board" ? req.actor.userId : null,
           authorizationReason: commentAuthorizationReason,
           sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
         };
