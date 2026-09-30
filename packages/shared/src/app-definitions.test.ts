@@ -560,7 +560,15 @@ describe("AppDefinition catalog", () => {
         (field) => field.key === "readOnly",
       )?.defaultValue,
     ).toBe(false);
-    expect(method("asana")?.ownershipModes).toEqual(["customer"]);
+    expect(method("asana")).toMatchObject({
+      key: "managed", ownershipModes: ["platform_shared"], connectorProfile: "asana.mcp",
+      defaults: { serverUrl: "https://mcp.asana.com/v2/mcp", scopesHint: ["default"] },
+    });
+    expect(APP_DEFINITIONS.find((app) => app.slug === "asana")?.methods[1]).toMatchObject({
+      key: "mcp-own-oauth", ownershipModes: ["customer"], oauthClientSecretRequired: true,
+      defaults: { discoveryUrl: "https://mcp.asana.com/.well-known/oauth-protected-resource/v2" },
+      consoleLinks: { register: "https://app.asana.com/0/my-apps" },
+    });
     expect(method("zapier")).toMatchObject({
       key: "generated-url",
       auth: "none",
