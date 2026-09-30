@@ -6,11 +6,11 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { agents, companies, createDb, environments, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { setExpensiveWorkspaceGitExecutor } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { createWorkspaceGitOperationScheduler, WorkspaceGitScanError } from "../services/workspace-git-operation-scheduler.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { heartbeatService } from "../services/heartbeat.ts";
+import { heartbeatService, type HeartbeatEnvironmentRuntime } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 
@@ -55,6 +55,52 @@ suite("task project repository provisioning", () => {
       enableIsolatedWorkspacesByDefault: false,
     });
   });
+
+  it("gives repository-free low-trust email tasks separate directories before sandbox acquisition", async () => {
+    const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID(), environmentId = randomUUID();
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    await db.insert(companies).values({ id: companyId, name: "Email company", issuePrefix: `E${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Onboarding" });
+    await db.insert(environments).values({ id: environmentId, name: "Email sandbox", driver: "sandbox", status: "active", config: { provider: "fake", image: "fake:test" } });
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "Email agent", role: "engineer", status: "idle", adapterType: "codex_local",
+      defaultEnvironmentId: environmentId, adapterConfig: {}, runtimeConfig: {},
+      permissions: { trustPreset: "low_trust_review", authorizationPolicy: {
+        trustPreset: "low_trust_review", trustBoundary: { mode: "low_trust_review", companyId, projectIds: [projectId] },
+      } },
+    });
+    // Stop at the external provider boundary. Everything before it, including
+    // trust preflight, workspace validation and persistence, uses production code.
+    const acquireRunLease = vi.fn(async () => { throw new Error("test sandbox acquisition reached"); });
+    const sandboxHeartbeat = heartbeatService(db, { environmentRuntime: {
+      acquireRunLease, releaseRunLeases: async () => [],
+    } as unknown as HeartbeatEnvironmentRuntime });
+    const directories: string[] = [];
+    for (let index = 0; index < 2; index += 1) {
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId, companyId, projectId, title: "Incoming email", originKind: "chat_channel", status: "todo", assigneeAgentId: agentId,
+        executionWorkspaceSettings: { mode: "isolated_workspace" },
+      });
+      const run = await sandboxHeartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
+      expect(run).not.toBeNull();
+      await vi.waitFor(async () => {
+        const latest = await sandboxHeartbeat.getRun(run!.id);
+        expect(latest?.status).toBe("failed");
+        expect(latest?.error).toContain("test sandbox acquisition reached");
+      }, { timeout: 15_000 });
+      await drainHeartbeatRunsToQuiescence(db, sandboxHeartbeat);
+      const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.sourceIssueId, issueId));
+      expect(workspace).toMatchObject({ companyId, projectId, mode: "isolated_workspace", strategyType: "project_primary" });
+      expect(workspace.cwd).toContain(`/isolated-workspaces/${companyId}/${agentId}/${issueId}`);
+      expect(execute.mock.calls.filter(([input]) => input.runId === run!.id)).toHaveLength(0);
+      directories.push(workspace.cwd!);
+      await writeFile(path.join(workspace.cwd!, "email.txt"), `private email ${index}`);
+    }
+    expect(acquireRunLease).toHaveBeenCalledTimes(2);
+    expect(directories[0]).not.toBe(directories[1]);
+    expect(await readFile(path.join(directories[0], "email.txt"), "utf8")).toBe("private email 0");
+  }, 40_000);
 
   it.each([
     { scenario: "no configured workspace", configuredWorkspace: false, explicitIsolation: null },

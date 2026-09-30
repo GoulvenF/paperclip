@@ -29,6 +29,10 @@ environment selected for the agent; setup rejects an unavailable runtime. New
 inbound tasks request isolated execution. The trust preset itself does not
 sandbox filesystem or network access. Standard agents remain selectable with a warning.
 
+A boundary project without a configured workspace can process email in a private
+task directory inside the selected sandbox. It does not need a Git repository.
+An explicitly configured workspace strategy still applies and must be usable.
+
 Removing the assigned agent’s saved-connection access or revoking its credential
 grant stops receiving and sending. Connection creation saves the vaulted binding,
 human grants, and agent access in one database transaction.
