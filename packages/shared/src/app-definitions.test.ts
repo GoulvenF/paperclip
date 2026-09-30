@@ -10,6 +10,7 @@ import {
   appSupportsCatalogSetup,
   getAvailableConnectionMethod,
   getAppDefinitionForUrl,
+  getConnectableAppDefinition,
   getRecommendedConnectionMethod,
   recommendedDefaultsForApp,
   resolveConnectionMethodServerUrl,
@@ -284,6 +285,17 @@ describe("AppDefinition catalog", () => {
     for (const entry of BLOCKED_MCP_PROVIDERS)
       expect(connectableSlugs.has(entry.slug)).toBe(false);
   });
+  it("separates GitHub tools from the review bot without changing the provider identity", () => {
+    const github = getConnectableAppDefinition("github")!;
+    const bot = getConnectableAppDefinition("github-code-review-bot")!;
+    expect(github.methods.map((method) => method.key)).toEqual(["managed", "mcp-key"]);
+    expect(github.methods.every((method) => method.purpose === "tool")).toBe(true);
+    expect(bot.name).toBe("GitHub Code Review Bot");
+    expect(bot.methods).toHaveLength(1);
+    expect(bot.methods[0]).toMatchObject({ provider: "github", purpose: "channel", transport: "chat_sdk" });
+    expect(bot.branding).toEqual(github.branding);
+    expect(bot.urlPatterns).toEqual([]);
+  });
   it("registers the five native chat providers with only required setup credentials", () => {
     const expected = {
       slack: {
@@ -292,11 +304,11 @@ describe("AppDefinition catalog", () => {
         resources: ["workspace", "channel"],
         tool: true,
       },
-      github: {
+      "github-code-review-bot": {
         credentials: ["appId", "privateKey"],
         publicFields: ["appId"],
         resources: ["organization", "repository"],
-        tool: true,
+        tool: false,
       },
       discord: {
         credentials: ["botToken", "applicationId", "guildId"],
@@ -329,7 +341,7 @@ describe("AppDefinition catalog", () => {
         key: "chat-agent",
         label: "Chat with an agent",
         purpose: "channel",
-        provider: slug,
+        provider: slug === "github-code-review-bot" ? "github" : slug,
         transport: "chat_sdk",
         auth: "api_key",
         ownershipModes: ["customer"],
@@ -374,20 +386,20 @@ describe("AppDefinition catalog", () => {
       APP_DEFINITIONS.find((app) => app.slug === slug)?.methods.find(
         (method) => method.purpose === "channel",
       );
-    expect(channel("github")?.guidanceMd).toContain("issue_comment");
+    expect(channel("github-code-review-bot")?.guidanceMd).toContain("issue_comment");
     expect(channel("discord")?.guidanceMd).toContain("Message Content intent");
     expect(channel("discord")?.guidanceMd).toContain("Discord thread");
-    expect(channel("github")?.guidanceMd).toContain("pull_request");
-    expect(channel("github")?.guidanceMd).toContain(
+    expect(channel("github-code-review-bot")?.guidanceMd).toContain("pull_request");
+    expect(channel("github-code-review-bot")?.guidanceMd).toContain(
       "pull_request_review_comment",
     );
-    expect(channel("github")?.guidanceMd).toContain(
+    expect(channel("github-code-review-bot")?.guidanceMd).toContain(
       "installation_repositories",
     );
-    expect(channel("github")?.guidanceMd).toContain(
+    expect(channel("github-code-review-bot")?.guidanceMd).toContain(
       "Generate the webhook secret in Paperclip",
     );
-    expect(channel("github")?.guidanceMd).toContain("SSL-verified");
+    expect(channel("github-code-review-bot")?.guidanceMd).toContain("SSL-verified");
     expect(channel("microsoft-teams")?.guidanceMd).toContain(
       "resource-specific",
     );
@@ -707,7 +719,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(57);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(58);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );

@@ -231,14 +231,14 @@ describe("Connectors landing page", () => {
 
   it("defaults to tools-only GitHub and hides chat-only catalog and existing chat accounts", async () => {
     experimentalMock.mockResolvedValue({});
-    listGalleryMock.mockResolvedValue({ apps: ["github", "discord", "telegram", "microsoft-teams"].map(getAppStoreDefinition) });
+    listGalleryMock.mockResolvedValue({ apps: ["github", "github-code-review-bot", "discord", "telegram", "microsoft-teams"].map(getAppStoreDefinition) });
     listApplicationsMock.mockResolvedValue({ applications: [application({
       id: "chat-app", type: "chat", name: "Private bot", applicationKey: "chat:github:endpoint-1", metadata: { purpose: "channel" },
     })] });
     await renderBrowse();
     expect(chatListMock).not.toHaveBeenCalled();
     expect(container.querySelector('[data-app-slug="github"]')).not.toBeNull();
-    for (const slug of ["discord", "telegram", "microsoft-teams", "slack"]) {
+    for (const slug of ["github-code-review-bot", "discord", "telegram", "microsoft-teams", "slack"]) {
       expect(container.querySelector(`[data-app-slug="${slug}"]`)).toBeNull();
     }
     expect(container.textContent).not.toContain("Private bot");
@@ -247,21 +247,52 @@ describe("Connectors landing page", () => {
     expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github");
   });
 
-  it("restores the GitHub intent chooser when enabled and hides cached chat rows immediately when disabled", async () => {
-    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("github")] });
-    chatListMock.mockResolvedValue([{ id: "endpoint-1", provider: "github", status: "active", assignedAgentName: "Chat agent", botLabel: "Chat bot", assignedAgentId: "agent-1" }]);
+  it("separates tools and saved bots and hides only bots when chat connectors are disabled", async () => {
+    listGalleryMock.mockResolvedValue({ apps: ["github", "github-code-review-bot"].map(getAppStoreDefinition) });
+    listApplicationsMock.mockResolvedValue({ applications: [
+      application({ id: "github-tools", name: "GitHub", metadata: { sourceTemplateKey: "github" } }),
+      application({ id: "chat-app", type: "chat", name: "Legacy bot", metadata: { sourceTemplateKey: "github", purpose: "channel" } }),
+    ] });
+    listConnectionsMock.mockResolvedValue({ connections: [
+      connection({ id: "github-account", applicationId: "github-tools", name: "My GitHub" }),
+      connection({ id: "chat-tools", applicationId: "chat-app", connectionPurpose: "channel" }),
+    ] });
+    chatListMock.mockResolvedValue([
+      { id: "endpoint-1", provider: "github", status: "active", assignedAgentName: "Review agent", botLabel: "Review bot", assignedAgentId: "agent-1" },
+      { id: "endpoint-2", provider: "github", status: "draft", assignedAgentName: "Draft agent", assignedAgentId: "agent-2" },
+    ]);
     const client = await renderBrowse();
-    expect(chatListMock).toHaveBeenCalledWith("company-1");
-    expect(container.querySelector('[data-app-slug="telegram"]')).not.toBeNull();
-    await act(() => void container.querySelector<HTMLButtonElement>('button[aria-label="Add connection GitHub"]')!.click());
-    expect(navigateMock).toHaveBeenLastCalledWith("/apps/chat/connect?provider=github&toolHref=%2Fapps%2Fconnect%3Fsource%3Dgithub");
+    const tools = container.querySelector('[data-app-slug="github"]')!;
+    const bots = container.querySelector('[data-app-slug="github-code-review-bot"]')!;
+    expect(tools.textContent).toContain("My GitHub");
+    expect(tools.textContent).not.toContain("Review agent");
+    expect(bots.textContent).toContain("Review agent · Code review bot");
+    expect(bots.textContent).toContain("Draft agent");
+    expect(bots.textContent).not.toContain("My GitHub");
+    expect(container.textContent).not.toContain("Legacy bot");
+    await act(() => void tools.querySelector<HTMLButtonElement>('button[aria-label="Add account GitHub"]')!.click());
+    expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github&applicationId=github-tools&name=GitHub&new=1");
+    await act(() => void bots.querySelector<HTMLButtonElement>('button[aria-label="Add connection GitHub Code Review Bot"]')!.click());
+    expect(navigateMock).toHaveBeenLastCalledWith("/apps/chat/connect?provider=github&purpose=chat");
+    const finish = [...bots.querySelectorAll("button")].find((button) => button.textContent === "Finish setup")!;
+    await act(() => finish.click());
+    expect(navigateMock).toHaveBeenLastCalledWith("/apps/chat/connect?provider=github&purpose=chat&resume=endpoint-2");
     await act(() => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableChatConnectors: false }); });
     await flushReact();
-    expect(container.querySelector('[data-app-slug="telegram"]')).toBeNull();
-    expect(container.textContent).not.toContain("Chat agent");
-    expect(container.querySelector('a[href*="/apps/chat/"]')).toBeNull();
+    expect(container.querySelector('[data-app-slug="github-code-review-bot"]')).toBeNull();
+    expect(container.textContent).not.toContain("Review agent");
+    expect(container.querySelector('[data-app-slug="github"]')).not.toBeNull();
+  });
+
+  it("keeps the GitHub tool card when the chat catalog needs its local fallback", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("github")] });
+    await renderBrowse();
+    expect(container.querySelector('[data-app-slug="github"]')).not.toBeNull();
+    expect(container.querySelector('[data-app-slug="github-code-review-bot"]')).not.toBeNull();
     await act(() => void container.querySelector<HTMLButtonElement>('button[aria-label="Connect GitHub"]')!.click());
     expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github");
+    await act(() => void container.querySelector<HTMLButtonElement>('button[aria-label="Connect GitHub Code Review Bot"]')!.click());
+    expect(navigateMock).toHaveBeenLastCalledWith("/apps/chat/connect?provider=github&purpose=chat");
   });
 
   it("renders one connector list with the requested header and no gallery sections", async () => {
@@ -294,7 +325,7 @@ describe("Connectors landing page", () => {
       ).map((row) => row.dataset.appSlug),
     ).toEqual([
       "discord",
-      "github",
+      "github-code-review-bot",
       "gmail",
       "imessage-photon",
       "jira",

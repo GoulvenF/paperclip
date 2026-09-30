@@ -258,7 +258,7 @@ const apps = [
   [
     "github",
     "GitHub",
-    "Give agents repository tools or let people work with an agent from GitHub issues and pull requests.",
+    "Give agents access to GitHub repositories, issues, and pull requests.",
     "developer",
     "github.com",
     ["https://api.githubcopilot.com/mcp/*", "https://github.com/*"],
@@ -271,7 +271,7 @@ const apps = [
         "S3",
         "Authorize Paperclip, then choose selected repositories in GitHub. You can edit repository access later from GitHub's installation settings.",
         {
-          label: "Use this connection as an agent tool",
+          label: "Connect GitHub",
           purpose: "tool",
           oauthStrategy: "paperclip_cloud_connector",
           connectorProfile: "github.code",
@@ -306,31 +306,40 @@ const apps = [
           requiredResourceFilters: ["organization", "repository"],
         },
       ),
-      channelMethod(
-        "github",
-        [
-          {
-            ...field("appId", "GitHub App ID", "123456"),
-            type: "text",
-            secret: false,
-          },
-          {
-            ...field(
-              "privateKey",
-              "Private key (PEM)",
-              "-----BEGIN RSA PRIVATE KEY-----",
-            ),
-            type: "textarea",
-          },
-        ],
-        ["organization", "repository"],
-        "Generate the webhook secret in Paperclip, then create one private GitHub App with active SSL-verified webhooks, Issues and Pull requests read/write permission, and the selectable issue_comment and pull_request_review_comment events. GitHub sends installation and installation_repositories automatically. Install the App only on repositories where people may mention the agent.",
-        {
-          register: "https://github.com/settings/apps/new",
-          docs: "https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app",
-        },
-      ),
     ],
+  ],
+  [
+    "github-code-review-bot",
+    "GitHub Code Review Bot",
+    "Have an agent review pull requests and respond to GitHub mentions.",
+    "developer",
+    "github.com",
+    [],
+    channelMethod(
+      "github",
+      [
+        {
+          ...field("appId", "GitHub App ID", "123456"),
+          type: "text",
+          secret: false,
+        },
+        {
+          ...field(
+            "privateKey",
+            "Private key (PEM)",
+            "-----BEGIN RSA PRIVATE KEY-----",
+          ),
+          type: "textarea",
+        },
+      ],
+      ["organization", "repository"],
+      "Generate the webhook secret in Paperclip, then create one private GitHub App with active SSL-verified webhooks, Issues and Pull requests read/write permission, and the selectable issue_comment and pull_request_review_comment events. GitHub sends installation and installation_repositories automatically. Install the App only on repositories where people may mention the agent.",
+      {
+        register: "https://github.com/settings/apps/new",
+        docs: "https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app",
+      },
+    ),
+    { featured: true },
   ],
   [
     "slack",

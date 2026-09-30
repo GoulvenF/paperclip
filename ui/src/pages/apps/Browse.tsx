@@ -388,9 +388,8 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     ).filter(
       (application) =>
         application.status !== "archived" &&
-        (chatConnectorsEnabled ||
-          (application.type !== "chat" &&
-            application.metadata?.purpose !== "channel")),
+        application.type !== "chat" &&
+        application.metadata?.purpose !== "channel",
     );
     const connectionsByApplicationId = new Map<string, ToolConnection[]>();
     for (const connection of activeConnections) {
@@ -429,51 +428,46 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
         chatEndpoints: [],
       });
     }
-    const nativeChatProviders = [
-      { provider: "imessage-photon", name: "iMessage Photon", description: "Message agents and share photos from Apple Messages with a dedicated Photon number." },
+    const nativeChatApps = [
+      { slug: "imessage-photon", name: "iMessage Photon", description: "Message agents and share photos from Apple Messages with a dedicated Photon number." },
       {
-        provider: "slack",
+        slug: "slack",
         name: "Slack",
         description:
           "Chat with agents from Slack channels and direct messages.",
       },
       {
-        provider: "github",
-        name: "GitHub",
+        slug: "github-code-review-bot",
+        name: "GitHub Code Review Bot",
         description:
-          "Chat with agents from issues, pull requests, and review threads.",
+          "Have an agent review pull requests and respond to GitHub mentions.",
       },
       {
-        provider: "discord",
+        slug: "discord",
         name: "Discord",
         description:
           "Chat with agents from Discord channels, threads, and direct messages.",
       },
       {
-        provider: "microsoft-teams",
+        slug: "microsoft-teams",
         name: "Microsoft Teams",
         description: "Chat with agents from Teams channels and conversations.",
       },
       {
-        provider: "telegram",
+        slug: "telegram",
         name: "Telegram",
         description:
           "Chat with agents from Telegram direct messages, groups, and topics.",
       },
     ] as const;
-    for (const item of chatConnectorsEnabled ? nativeChatProviders : []) {
-      if (
-        [...rowsBySlug.values()].some(
-          (row) => chatProviderForSlug(row.slug) === item.provider,
-        )
-      )
-        continue;
-      rowsBySlug.set(item.provider, {
-        key: `native-chat:${item.provider}`,
-        slug: item.provider,
+    for (const item of chatConnectorsEnabled ? nativeChatApps : []) {
+      if (rowsBySlug.has(item.slug)) continue;
+      rowsBySlug.set(item.slug, {
+        key: `native-chat:${item.slug}`,
+        slug: item.slug,
         name: item.name,
         description: item.description,
-        brandKey: item.provider,
+        brandKey: item.slug,
         entry: null,
         applications: [],
         connections: [],
@@ -857,17 +851,17 @@ export function ConnectorCard({
           {row.chatEndpoints.map((endpoint) => (
             <div
               key={endpoint.id}
-              className="flex flex-wrap items-center gap-3 px-4 py-3"
+              className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:gap-3"
             >
               <div className="min-w-0 flex-1">
                 <button
                   type="button"
-                  className="truncate text-left text-sm font-medium hover:underline"
+                  className="block max-w-full truncate text-left text-sm font-medium hover:underline"
                   onClick={() =>
                     onNavigate(`/apps/chat/${endpoint.id}/settings`)
                   }
                 >
-                  {endpoint.assignedAgentName} · {endpoint.provider === "agentmail" ? "Email" : "Chat"}
+                  {endpoint.assignedAgentName} · {endpoint.provider === "agentmail" ? "Email" : endpoint.provider === "github" ? "Code review bot" : "Chat"}
                 </button>
                 <p className="truncate text-xs text-muted-foreground">
                   {endpoint.providerAccountLabel ??
@@ -875,10 +869,10 @@ export function ConnectorCard({
                     "Provider identity"}
                 </p>
               </div>
-              <span className="text-xs text-muted-foreground">
-                {endpoint.status.replace(/_/g, " ")}
-              </span>
               <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">
+                  {endpoint.status.replace(/_/g, " ")}
+                </span>
                 {endpoint.status === "draft" ? (
                   <Button
                     size="sm"
