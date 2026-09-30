@@ -24,10 +24,10 @@ export function shouldUseIsolatedTaskDirectory(input: {
 /** Stable across turns, separate from project roots and shared agent homes. */
 export async function materializeIsolatedTaskDirectory(input: {
   companyId: string;
-  agentId: string;
   issueId: string;
 }): Promise<string> {
-  const identities = [input.companyId, input.agentId, input.issueId];
+  // Files belong to the task, so reassignment preserves the same workspace.
+  const identities = [input.companyId, input.issueId];
   if (identities.some((value) => !/^[a-zA-Z0-9_-]+$/.test(value))) {
     throw new Error("Invalid isolated task workspace identity");
   }

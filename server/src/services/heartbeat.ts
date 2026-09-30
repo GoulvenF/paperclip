@@ -12557,9 +12557,10 @@ export function heartbeatService(
     opts?: {
       useProjectWorkspace?: boolean | null;
       executionEnvironmentDriver?: string | null;
+      anchorWorkspace?: ResolvedAnchorWorkspaceForRun;
     },
   ): Promise<ResolvedWorkspaceForRun> {
-    const anchor = await resolveAnchorWorkspaceForRun(
+    const anchor = opts?.anchorWorkspace ?? await resolveAnchorWorkspaceForRun(
       agent,
       context,
       previousSessionParams,
@@ -21744,7 +21745,6 @@ export function heartbeatService(
           if (useIsolatedTaskDirectory && issueRef) {
             const cwd = await materializeIsolatedTaskDirectory({
               companyId: agent.companyId,
-              agentId: agent.id,
               issueId: issueRef.id,
             });
             if (reusableExistingExecutionWorkspace && (
@@ -21759,20 +21759,21 @@ export function heartbeatService(
                 workspaceValidation: { reason: "isolated_task_directory_binding_mismatch", issueId: issueRef.id },
               });
             }
-            return {
-              cwd,
-              source: "task_session" as const,
-              projectId: issueRef.projectId,
-              workspaceId: null,
-              repoUrl: null,
-              repoRef: null,
-              workspaceHints: [],
-              warnings: [],
-              baseCwdFallback: false,
-              materializationFailures: [],
-              additionalWorkspaces: [],
-              referencedProjectFailures: [],
-            };
+            return resolveWorkspaceForRun(agent, context, previousSessionParams, {
+              executionEnvironmentDriver: selectedEnvironmentForConfig?.driver ?? null,
+              anchorWorkspace: {
+                cwd,
+                source: "task_session",
+                projectId: issueRef.projectId,
+                workspaceId: null,
+                repoUrl: null,
+                repoRef: null,
+                workspaceHints: [],
+                warnings: [],
+                baseCwdFallback: false,
+                materializationFailures: [],
+              },
+            });
           }
           if (nativeChatWorkspaceScope && !nativeChatWorkspaceScope.projectId) {
             const cwd = await materializeNativeChatTaskRoot(

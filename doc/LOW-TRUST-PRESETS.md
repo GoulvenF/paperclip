@@ -66,8 +66,8 @@ runtime boundary:
   grants the `runtime.manage` tool class
 
 When the task's project has no configured workspace and no layer specifies a
-workspace strategy, sandbox execution uses a private directory for that company,
-agent, and task. The directory persists across turns and never imports the shared
+workspace strategy, sandbox execution uses a private directory for that company
+and task. The directory persists across turns and reassignment and never imports the shared
 project directory or agent home. No Git repository is required for this case.
 Configured workspaces and explicit Git strategies keep their existing validation;
 a missing or broken checkout does not fall back to an empty directory.
