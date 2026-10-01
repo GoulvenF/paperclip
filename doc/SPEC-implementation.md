@@ -631,8 +631,9 @@ human conversation or the exact task explicitly assigned or addressed by a human
 This server-owned exception is bound to the current assignee and the run's task;
 it uses existing conversation identity and authenticated execution-request records,
 including same-task retry ancestry. It does not expand inherited boundaries or
-grant privileged tools. Reassignment cancels the prior execution; cancelled runs
-cannot authorize later retries. See `doc/LOW-TRUST-PRESETS.md` for containment details.
+grant privileged tools. Backlog assignments retain the existing human requester
+without starting a run. Reassignment transactionally cancels prior human requests,
+including service/plugin writes; cancelled runs cannot authorize later retries. See `doc/LOW-TRUST-PRESETS.md` for containment details.
 
 Cross-issue writes are contained per heartbeat run. An agent-authored comment
 may wake the target assignee, including an explicit `resume: true` comment on a

@@ -46,8 +46,11 @@ low-trust work must go through higher-trust review and promotion paths instead.
 An authenticated board user can talk to a low-trust agent in their own Agent
 Chat or assign it a task outside its default intake boundary. Existing conversation
 identity authorizes owner chat. Ordinary tasks use the human requester already
-recorded on the run's wakeup requests, including coalesced requests. No separate
-permission table or client-supplied human identity is needed. Responsible-user
+recorded on the run's wakeup requests, including coalesced requests. Each request
+retains its server-owned origin; plugin-attributed users do not count as board
+instructions. A board backlog assignment is retained as a completed assignment
+request with no run, so it authorizes the later system launch without starting
+work prematurely. No separate permission table or client-supplied human identity is needed. Responsible-user
 attribution, external connector sender attribution, and agent claims do not qualify.
 
 At dispatch and API authorization, Paperclip checks the live run and current
@@ -59,8 +62,9 @@ stored in the inherited trust boundary.
 
 Automatic retries and continuations follow the existing `retryOfRunId` database
 links, checking the same company, agent, and task at every step. Cancelled runs
-cannot authorize a retry. Reassignment uses the existing run-cancellation path;
-assigning the task back cannot revive that cancelled execution. Sandbox and
+cannot authorize a retry. The common assignment transaction cancels prior human
+requests, including plugin and service reassignments. Assigning the task back
+cannot revive those requests, and late run settlement cannot undo cancellation. Sandbox and
 isolated workspace requirements still apply, as do malformed-policy and
 company-boundary checks.
 

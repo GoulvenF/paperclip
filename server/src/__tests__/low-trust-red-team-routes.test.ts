@@ -50,6 +50,7 @@ import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.j
 import { errorHandler } from "../middleware/index.js";
 import { agentRoutes } from "../routes/agents.js";
 import { issueRoutes } from "../routes/issues.js";
+import { issueService } from "../services/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { LOW_TRUST_QUARANTINED_BODY } from "../services/source-trust.js";
 
@@ -983,6 +984,53 @@ describeEmbeddedPostgres(
       const staleRead = await request(directedAgent).get(`/api/issues/${created.body.id}`);
       expect([403, 404]).toContain(staleRead.status);
 
+    });
+
+    it("retains a board backlog assignment and rejects plugin-attributed wakes with forged board payloads", async () => {
+      const fixture = await seedLowTrustFixture(db);
+      await db.insert(authUsers).values({ id: "board-user", name: "Owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId: fixture.company.id, principalType: "user", principalId: "board-user", membershipRole: "owner", status: "active" });
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } })
+        .where(eq(agents.id, fixture.agents.lowTrust.id));
+      const board = createApp(db, boardActor(fixture));
+      const created = await request(board).post(`/api/companies/${fixture.company.id}/issues`)
+        .send({ title: "Human backlog assignment", status: "backlog", assigneeAgentId: fixture.agents.lowTrust.id });
+      expect(created.status, JSON.stringify(created.body)).toBe(201);
+      const receipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.company.id));
+      expect(receipts.filter(w => w.payload?.issueId === created.body.id)).toEqual([expect.objectContaining({
+        reason: "issue_human_assignment", status: "completed", runId: null, requestedByActorId: "board-user",
+      })]);
+      await issueService(db).update(created.body.id, { status: "todo" });
+      const systemRun = await heartbeatService(db).wakeup(fixture.agents.lowTrust.id, {
+        source: "automation", reason: "issue_ready", requestedByActorType: "system",
+        payload: { issueId: created.body.id }, contextSnapshot: { issueId: created.body.id, source: "automatic_promotion" },
+      });
+      expect(systemRun).toBeTruthy();
+      await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, systemRun!.id));
+      const worker = createApp(db, { ...agentActor(fixture), runId: systemRun!.id });
+      expect((await request(worker).get(`/api/issues/${created.body.id}`)).status).toBe(200);
+      // These are the same service calls used by plugin issues.update; no HTTP
+      // cancellation is involved, and the run is deliberately left running.
+      await issueService(db).update(created.body.id, { assigneeAgentId: fixture.agents.collaborator.id });
+      await issueService(db).update(created.body.id, { assigneeAgentId: fixture.agents.lowTrust.id });
+      expect([403, 404]).toContain((await request(worker).get(`/api/issues/${created.body.id}`)).status);
+      const pluginRun = await heartbeatService(db).wakeup(fixture.agents.lowTrust.id, {
+        source: "automation", reason: "issue_commented", requestedByActorType: "user", requestedByActorId: "board-user",
+        payload: { issueId: created.body.id, _paperclipWakeContext: { source: "issue.comment" } },
+        contextSnapshot: { issueId: created.body.id, source: "plugin:example" },
+      });
+      expect(pluginRun).toBeTruthy();
+      const pluginWake = (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.runId, pluginRun!.id)))
+        .find(w => w.requestedByActorType === "user")!;
+      expect(pluginWake.payload?._paperclipWakeContext).toMatchObject({ source: "plugin:example" });
+      await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, pluginRun!.id));
+      const pluginWorker = createApp(db, { ...agentActor(fixture), runId: pluginRun!.id });
+      expect([403, 404]).toContain((await request(pluginWorker).get(`/api/issues/${created.body.id}`)).status);
+      // Authenticated reassignment while still in backlog also retains direction.
+      const assigned = await request(board).patch(`/api/issues/${created.body.id}`)
+        .send({ status: "backlog", assigneeAgentId: fixture.agents.lowTrust.id });
+      expect(assigned.status, JSON.stringify(assigned.body)).toBe(200);
+      expect((await request(pluginWorker).get(`/api/issues/${created.body.id}`)).status).toBe(200);
     });
 
     it("allows bounded same-issue reads and writes while quarantining low-trust output", async () => {
