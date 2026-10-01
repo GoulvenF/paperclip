@@ -259,8 +259,10 @@ export function describeIssueWriteDenial(
         whoCanAct: `${actor}, on a run started for an issue.`,
         sanctionedPath:
           `Send the \`X-Paperclip-Run-Id\` header with your current run (\`$PAPERCLIP_RUN_ID\`). ` +
-          `If that header is already correct, end this run and start an issue-scoped run ` +
-          `with \`PAPERCLIP_TASK_ID\` set; checkout alone cannot establish the source issue.`,
+          `If that header is already correct, request an issue-scoped run: ` +
+          `\`POST /api/agents/$PAPERCLIP_AGENT_ID/wakeup\` with ` +
+          `\`{"payload":{"issueId":"<issue id>"}}\`. Then end this run. ` +
+          `The new run starts with that issue as its source.`,
 
       };
 

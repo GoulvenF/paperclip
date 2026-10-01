@@ -198,8 +198,7 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([]);
   });
 
-  it("fails closed when a run started without an issue checks out one later", async () => {
-    // Checkout changes issue ownership but does not rewrite the run's source.
+  it("fails closed when the persisted run has no source issue", async () => {
     const fake = counterDb(0, { contextSnapshot: {} });
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
