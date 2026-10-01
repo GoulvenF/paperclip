@@ -882,9 +882,8 @@ export function authorizationService(db: Db | DbTransaction) {
       run,
     });
     if (!input.actor.runId || resolution.kind !== "low_trust_review") return resolution;
-    const issueId = await loadRunIssueId(input.actor.runId, input.companyId, input.actorAgent.id);
     return withHumanDirectedWork(db, resolution, {
-      companyId: input.companyId, agentId: input.actorAgent.id, issueId,
+      companyId: input.companyId, agentId: input.actorAgent.id, runId: input.actor.runId,
     });
   }
 

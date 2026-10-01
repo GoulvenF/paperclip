@@ -62,10 +62,9 @@ export async function resolveAndRetainRunTrustPreset(
         updatedAt: new Date(),
       })
       .where(scope);
-    const runIssueId = run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId;
     return { trustPreset: await withHumanDirectedWork(tx, trustPreset, {
       companyId: input.companyId, agentId: input.agentId,
-      issueId: typeof runIssueId === "string" ? runIssueId : null,
+      runId: input.runId,
     }), executionPolicy };
   });
 }

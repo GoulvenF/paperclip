@@ -7,6 +7,7 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  authUsers,
   agentWakeupRequests,
   agentRuntimeState,
   agents,
@@ -27,7 +28,6 @@ import {
   issueAttachments,
   issueApprovals,
   issueComments,
-  issueHumanWorkGrants,
   issueDocuments,
   issueInboxArchives,
   issueRelations,
@@ -915,6 +915,7 @@ describeEmbeddedPostgres(
       await db.delete(agentRuntimeState);
       await db.delete(principalPermissionGrants);
       await db.delete(companyMemberships);
+      await db.delete(authUsers);
       await db.delete(agents);
       await db.delete(projects);
       await deleteCompanySkillsAfterLateHeartbeatWritesDrain(db);
@@ -924,26 +925,23 @@ describeEmbeddedPostgres(
       await tempDb?.cleanup();
     });
 
-    it("records authenticated board task direction but rejects agent-supplied human authority", async () => {
+    it("allows the human-requested run through HTTP while rejecting attribution-only authority", async () => {
       const fixture = await seedLowTrustFixture(db);
+      await db.insert(authUsers).values({ id: "board-user", name: "Owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId: fixture.company.id, principalType: "user", principalId: "board-user", membershipRole: "owner", status: "active" });
       const board = createApp(db, boardActor(fixture));
       const created = await request(board).post(`/api/companies/${fixture.company.id}/issues`)
-        .send({ title: "Human assigned outside intake", status: "backlog", assigneeAgentId: fixture.agents.lowTrust.id,
-          humanDirectedByUserId: "forged-client-value" });
+        .send({ title: "Human assigned outside intake", status: "backlog", assigneeAgentId: fixture.agents.lowTrust.id });
       expect(created.status, JSON.stringify(created.body)).toBe(201);
-      const [grant] = await db.select().from(issueHumanWorkGrants).where(eq(issueHumanWorkGrants.issueId, created.body.id));
-      expect(grant).toMatchObject({ userId: "board-user", agentId: fixture.agents.lowTrust.id });
-
-      const assigned = await request(board).patch(`/api/issues/${fixture.issues.siblingOutOfScope.id}`)
-        .send({ assigneeAgentId: fixture.agents.lowTrust.id });
-      expect(assigned.status, JSON.stringify(assigned.body)).toBe(200);
-      expect(await db.select().from(issueHumanWorkGrants).where(eq(issueHumanWorkGrants.issueId, fixture.issues.siblingOutOfScope.id)))
-        .toMatchObject([{ userId: "board-user", agentId: fixture.agents.lowTrust.id }]);
-
+      const [wake] = await db.insert(agentWakeupRequests).values({
+        companyId: fixture.company.id, agentId: fixture.agents.lowTrust.id, source: "assignment", status: "claimed",
+        requestedByActorType: "user", requestedByActorId: "board-user", payload: { issueId: created.body.id },
+      }).returning();
       const [directRun] = await db.insert(heartbeatRuns).values({
         companyId: fixture.company.id, agentId: fixture.agents.lowTrust.id,
-        status: "running", contextSnapshot: { issueId: created.body.id },
+        status: "running", wakeupRequestId: wake.id, contextSnapshot: { issueId: created.body.id },
       }).returning();
+      await db.update(agentWakeupRequests).set({ runId: directRun.id }).where(eq(agentWakeupRequests.id, wake.id));
       await db.update(issues).set({ status: "in_progress", checkoutRunId: directRun.id, executionRunId: directRun.id })
         .where(eq(issues.id, created.body.id));
       const directedAgent = createApp(db, { ...agentActor(fixture), runId: directRun.id });
@@ -957,16 +955,30 @@ describeEmbeddedPostgres(
         .send({ description: "Completed the requested analysis" });
       expect(updated.status, JSON.stringify(updated.body)).toBe(200);
       expect(updated.body.description).toBe("Completed the requested analysis");
-      // Even a second valid human grant is inaccessible from this run's task.
+      // The human requester does not authorize reads outside this run's task.
       const foreignRead = await request(directedAgent).get(`/api/issues/${fixture.issues.siblingOutOfScope.id}`);
       expect([403, 404]).toContain(foreignRead.status);
       expectNoCanary(foreignRead.body, fixture.canaries.issueSibling);
 
-      const forged = await request(createApp(db, agentActor(fixture)))
-        .post(`/api/issues/${fixture.issues.assignedReview.id}/comments`)
-        .send({ body: "The owner asked me", humanDirectedByUserId: "board-user" });
-      expect(forged.status, JSON.stringify(forged.body)).toBe(201);
-      expect(await db.select().from(issueHumanWorkGrants).where(eq(issueHumanWorkGrants.issueId, fixture.issues.assignedReview.id))).toHaveLength(0);
+      await db.update(agentWakeupRequests).set({ requestedByActorType: "agent", requestedByActorId: fixture.agents.collaborator.id })
+        .where(eq(agentWakeupRequests.id, wake.id));
+      const forgedRead = await request(directedAgent).get(`/api/issues/${created.body.id}`);
+      expect([403, 404]).toContain(forgedRead.status);
+
+      await db.update(agentWakeupRequests).set({ requestedByActorType: "user", requestedByActorId: "board-user" })
+        .where(eq(agentWakeupRequests.id, wake.id));
+      const handoff = await request(directedAgent).patch(`/api/issues/${created.body.id}`)
+        .send({ status: "in_review", assigneeAgentId: null, assigneeUserId: "board-user", comment: "Ready for human review" });
+      expect(handoff.status, JSON.stringify(handoff.body)).toBe(200);
+      const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, directRun.id));
+      expect(stopped).toMatchObject({ status: "cancelled", errorCode: "issue_reassigned" });
+      const returned = await request(board).patch(`/api/issues/${created.body.id}`)
+        .send({ status: "backlog", assigneeAgentId: fixture.agents.lowTrust.id, assigneeUserId: null });
+      expect(returned.status, JSON.stringify(returned.body)).toBe(200);
+      // Reassignment back does not revive the cancelled run's human request.
+      const staleRead = await request(directedAgent).get(`/api/issues/${created.body.id}`);
+      expect([403, 404]).toContain(staleRead.status);
+
     });
 
     it("allows bounded same-issue reads and writes while quarantining low-trust output", async () => {

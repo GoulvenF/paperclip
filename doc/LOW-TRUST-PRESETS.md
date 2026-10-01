@@ -44,23 +44,25 @@ low-trust work must go through higher-trust review and promotion paths instead.
 ## Human-directed work
 
 An authenticated board user can talk to a low-trust agent in their own Agent
-Chat or assign it a task outside its default intake boundary. Creating or
-assigning a task, or posting a new board comment to its current agent assignee,
-records a server-owned `issue_human_work_grants` receipt in the same transaction.
-External sender attribution and agent claims of human authority do not qualify.
-Existing owner conversations use their immutable conversation identity.
+Chat or assign it a task outside its default intake boundary. Existing conversation
+identity authorizes owner chat. Ordinary tasks use the human requester already
+recorded on the run's wakeup requests, including coalesced requests. No separate
+permission table or client-supplied human identity is needed. Responsible-user
+attribution, external connector sender attribution, and agent claims do not qualify.
 
-At dispatch and API authorization, Paperclip checks the current assignment and
-the actual run's task. The exception permits reading, commenting on, and updating
-only that exact task. It does not extend to another task, a child, a whole project,
-configuration, instructions, secrets, or runtime management. Normal responsible
-user checks still apply. The exception is never stored in the inherited trust
-boundary; retries and resumed runs recheck the receipt and current assignment.
+At dispatch and API authorization, Paperclip checks the live run and current
+assignment in one database snapshot. The exception permits reading, commenting
+on, and updating only that run's exact task. It does not extend to another task,
+a child, a whole project, configuration, instructions, secrets, or runtime
+management. Normal responsible-user checks still apply. The exception is never
+stored in the inherited trust boundary.
 
-Changing the assignee revokes the receipt, including a change away and back.
-Retrying an old comment does not grant new authority. A new human assignment or
-comment can authorize the current assignee again. Sandbox and isolated workspace
-requirements still apply, as do malformed-policy and company-boundary checks.
+Automatic retries and continuations follow the existing `retryOfRunId` database
+links, checking the same company, agent, and task at every step. Cancelled runs
+cannot authorize a retry. Reassignment uses the existing run-cancellation path;
+assigning the task back cannot revive that cancelled execution. Sandbox and
+isolated workspace requirements still apply, as do malformed-policy and
+company-boundary checks.
 
 ## Child→Parent Reporting Under Containment
 

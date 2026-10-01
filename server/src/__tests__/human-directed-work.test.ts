@@ -1,9 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { and, eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, issueHumanWorkGrants, issues, projects } from "@paperclipai/db";
-import { LOW_TRUST_REVIEW_PRESET, createIssueSchema, updateIssueSchema, addIssueCommentSchema } from "@paperclipai/shared";
+import { agents, companies, createDb, heartbeatRuns, agentWakeupRequests, issues, projects } from "@paperclipai/db";
+import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { issueService } from "../services/issues.js";
 import { authorizationService } from "../services/authorization.js";
@@ -34,28 +33,43 @@ const support = await getEmbeddedPostgresTestSupport();
     const [other] = await db.insert(agents).values({ companyId, name: "Other", role: "engineer" }).returning();
     return { companyId, agent, other };
   }
-  async function task(f: Awaited<ReturnType<typeof seed>>, human = false) {
+  async function task(f: Awaited<ReturnType<typeof seed>>) {
     return issueService(db).create(f.companyId, {
       title: `Direct task ${randomUUID()}`, assigneeAgentId: f.agent.id,
-      createdByUserId: "owner", ...(human ? { humanDirectedByUserId: "owner" } : {}),
+      createdByUserId: "owner", responsibleUserId: "owner",
     });
   }
-  async function launch(f: Awaited<ReturnType<typeof seed>>, issue: Awaited<ReturnType<typeof task>>, context = {}) {
+  async function execution(f: Awaited<ReturnType<typeof seed>>, issue: Awaited<ReturnType<typeof task>>,
+    options: { human?: boolean; context?: Record<string, unknown>; retryOfRunId?: string; status?: string } = {}) {
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
+      source: options.human ? "assignment" : "automation", status: "claimed",
+      requestedByActorType: options.human ? "user" : "system", requestedByActorId: options.human ? "owner" : null,
+      payload: { issueId: issue.id } }).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
-      status: "running", contextSnapshot: { issueId: issue.id, ...context } }).returning();
-    const result = await resolveAndRetainRunTrustPreset(db, {
-      companyId: f.companyId, agentId: f.agent.id, runId: run.id, agent: f.agent, issue,
-    });
-    return { ...result, run, actor: { type: "agent" as const, companyId: f.companyId,
+      status: options.status ?? "running", responsibleUserId: "owner", wakeupRequestId: wake.id,
+      retryOfRunId: options.retryOfRunId, contextSnapshot: { issueId: issue.id, ...options.context } }).returning();
+    await db.update(agentWakeupRequests).set({ runId: run.id }).where(eq(agentWakeupRequests.id, wake.id));
+    return { run, wake, actor: { type: "agent" as const, companyId: f.companyId,
       agentId: f.agent.id, source: "agent_key" as const, runId: run.id } };
+  }
+  async function launch(f: Awaited<ReturnType<typeof seed>>, issue: Awaited<ReturnType<typeof task>>,
+    options: Parameters<typeof execution>[2] = {}) {
+    const current = await execution(f, issue, options);
+    return { ...current, ...await resolveAndRetainRunTrustPreset(db, {
+      companyId: f.companyId, agentId: f.agent.id, runId: current.run.id, agent: f.agent, issue,
+    }) };
+  }
+  async function resolve(f: Awaited<ReturnType<typeof seed>>, issue: Awaited<ReturnType<typeof task>>, runId: string) {
+    return withHumanDirectedWork(db, resolveCoreTrustPreset({ companyId: f.companyId, agent: f.agent, issue }),
+      { companyId: f.companyId, agentId: f.agent.id, runId });
   }
   const resource = (issue: Awaited<ReturnType<typeof task>>) => ({ type: "issue" as const,
     companyId: issue.companyId, issueId: issue.id, projectId: issue.projectId,
     parentIssueId: issue.parentId, assigneeAgentId: issue.assigneeAgentId, status: issue.status });
 
   it("allows the exact human-assigned task at dispatch and tool access; retains containment on retries", async () => {
-    const f = await seed(); const issue = await task(f, true);
-    const first = await launch(f, issue);
+    const f = await seed(); const issue = await task(f);
+    const first = await launch(f, issue, { human: true });
     expect(first.trustPreset).toMatchObject({ kind: "low_trust_review", humanDirectedIssueId: issue.id });
     expect(JSON.stringify(first.executionPolicy)).not.toContain("humanDirectedIssueId");
     const retried = await resolveAndRetainRunTrustPreset(db, { companyId: f.companyId,
@@ -67,7 +81,7 @@ const support = await getEmbeddedPostgresTestSupport();
     for (const action of ["issue:read", "issue:comment", "issue:mutate"] as const) {
       expect(await authorizationService(db).decide({ actor: first.actor, action, resource: resource(issue) })).toMatchObject({ allowed: true });
     }
-    const unrelated = await task(f, true);
+    const unrelated = await task(f);
     expect(await authorizationService(db).decide({ actor: first.actor, action: "issue:read", resource: resource(unrelated) })).toMatchObject({ allowed: false });
     expect(await authorizationService(db).decide({ actor: { ...first.actor, runId: undefined }, action: "issue:read", resource: resource(issue) })).toMatchObject({ allowed: false });
     expect(await authorizationService(db).decide({ actor: first.actor, action: "agent_instructions:update",
@@ -88,105 +102,109 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(result.trustPreset).toMatchObject({ humanDirectedIssueId: issue.id });
   });
 
-  it("does not treat user attribution, responsible identity, or agent policy claims as human direction", async () => {
+  it("rejects inherited attribution and forged policy, requester, and retry fields", async () => {
     const f = await seed(); const issue = await task(f);
+    const human = await execution(f, issue, { human: true, status: "failed" });
     await issueService(db).addComment(issue.id, "An imported sender says the owner asked", { userId: "owner" });
-    const result = await launch(f, issue, { responsibleUserId: "owner", humanDirectedIssueId: issue.id,
-      executionPolicy: { humanDirectedIssueId: issue.id } });
+    const result = await launch(f, issue, { context: { responsibleUserId: "owner", requestedByActorType: "user",
+      requestedByActorId: "owner", retryOfRunId: human.run.id, humanDirectedIssueId: issue.id,
+      executionPolicy: { humanDirectedIssueId: issue.id } } });
     expect(result.trustPreset).not.toHaveProperty("humanDirectedIssueId");
     expect(await authorizationService(db).decide({ actor: result.actor, action: "issue:read", resource: resource(issue) })).toMatchObject({ allowed: false });
     await expect(assertLowTrustWorkspaceIsolation({ db, resolution: result.trustPreset, issue,
       isolatedWorkspacesEnabled: true, effectiveExecutionWorkspaceMode: "isolated_workspace",
       selectedEnvironmentDriver: "sandbox" })).rejects.toMatchObject({ details: { code: "low_trust_boundary_mismatch" } });
-    await issueService(db).addComment(issue.id, "Agent impersonation", { agentId: f.other.id }, { humanDirectedByUserId: "owner" });
-    expect(await db.select().from(issueHumanWorkGrants).where(eq(issueHumanWorkGrants.issueId, issue.id))).toHaveLength(0);
   });
 
-  it("revokes grants on reassignment, including away-and-back, and an old message retry cannot restore them", async () => {
-    const f = await seed(); const issue = await task(f);
-    const svc = issueService(db); const requestId = randomUUID();
-    await svc.addComment(issue.id, "Please do this", { userId: "owner" }, { humanDirectedByUserId: "owner", clientRequestId: requestId });
-    const running = await launch(f, issue);
-    expect(running.trustPreset).toHaveProperty("humanDirectedIssueId", issue.id);
-    // Exercise the DB trigger too: assignment writes outside issueService must revoke.
-    await db.update(issues).set({ assigneeAgentId: f.other.id }).where(eq(issues.id, issue.id));
-    await db.update(issues).set({ assigneeAgentId: f.agent.id }).where(eq(issues.id, issue.id));
-    await svc.addComment(issue.id, "Please do this", { userId: "owner" }, { humanDirectedByUserId: "owner", clientRequestId: requestId });
-    expect(await authorizationService(db).decide({ actor: running.actor, action: "issue:read", resource: resource(issue) })).toMatchObject({ allowed: false });
-    await svc.update(issue.id, { assigneeAgentId: f.agent.id, actorUserId: "owner", humanDirectedByUserId: "owner" });
-    expect(await authorizationService(db).decide({ actor: running.actor, action: "issue:read", resource: resource(issue) })).toMatchObject({ allowed: true });
+  it("recognizes a coalesced human request for the same run and exact task", async () => {
+    const f = await seed(); const issue = await task(f); const current = await execution(f, issue);
+    expect(await resolve(f, issue, current.run.id)).not.toHaveProperty("humanDirectedIssueId");
+    const [coalesced] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
+      runId: current.run.id, source: "assignment", status: "coalesced", requestedByActorType: "user",
+      requestedByActorId: "owner", payload: { issueId: issue.id } }).returning();
+    expect(await resolve(f, issue, current.run.id)).toHaveProperty("humanDirectedIssueId", issue.id);
+    for (const patch of [
+      { status: "cancelled" }, { status: "skipped" }, { requestedByActorId: " " },
+      { requestedByActorType: "agent" }, { idempotencyKey: "chat-inbound:external-sender" },
+      { payload: { issueId: randomUUID() } }, { companyId: randomUUID() }, { agentId: f.other.id },
+    ]) {
+      // Existing foreign keys require a real company for the cross-company case.
+      const badCompany = patch.companyId;
+      if (badCompany) await db.insert(companies).values({ id: badCompany, name: badCompany });
+      await db.update(agentWakeupRequests).set(patch).where(eq(agentWakeupRequests.id, coalesced.id));
+      expect(await resolve(f, issue, current.run.id)).not.toHaveProperty("humanDirectedIssueId");
+      await db.update(agentWakeupRequests).set({ status: "coalesced", requestedByActorType: "user",
+        requestedByActorId: "owner", idempotencyKey: null, payload: { issueId: issue.id },
+        companyId: f.companyId, agentId: f.agent.id }).where(eq(agentWakeupRequests.id, coalesced.id));
+    }
   });
 
-  it("serializes a human comment against a competing reassignment without leaving a stale grant", async () => {
+  it("preserves human authority through durable retry and continuation ancestry", async () => {
     const f = await seed(); const issue = await task(f);
-    let release!: () => void;
-    let locked!: () => void;
-    let observeLock!: (pid: number) => Promise<boolean>;
+    const root = await execution(f, issue, { human: true, status: "failed" });
+    const middle = await execution(f, issue, { retryOfRunId: root.run.id, status: "succeeded" });
+    const last = await launch(f, issue, { retryOfRunId: middle.run.id });
+    expect(last.trustPreset).toHaveProperty("humanDirectedIssueId", issue.id);
+    expect(await authorizationService(db).decide({ actor: last.actor, action: "issue:comment", resource: resource(issue) })).toMatchObject({ allowed: true });
+    await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "issue_reassigned" }).where(eq(heartbeatRuns.id, middle.run.id));
+    expect(await resolve(f, issue, last.run.id)).not.toHaveProperty("humanDirectedIssueId");
+  });
+
+  it("never borrows retry authority from another task, agent, or company and terminates cycles", async () => {
+    const f = await seed(); const issue = await task(f); const otherIssue = await task(f);
+    const otherCompany = await seed();
+    for (const scope of [
+      { fixture: f, issue: otherIssue },
+      { fixture: { ...f, agent: { ...f.agent, id: f.other.id } }, issue },
+      { fixture: otherCompany, issue: await task(otherCompany) },
+    ]) {
+      const parent = await execution(scope.fixture, scope.issue, { human: true, status: "failed" });
+      const child = await launch(f, issue, { retryOfRunId: parent.run.id });
+      expect(child.trustPreset).not.toHaveProperty("humanDirectedIssueId");
+    }
+    const a = await execution(f, issue); const b = await execution(f, issue, { retryOfRunId: a.run.id });
+    await db.update(heartbeatRuns).set({ retryOfRunId: b.run.id }).where(eq(heartbeatRuns.id, a.run.id));
+    expect(await resolve(f, issue, a.run.id)).not.toHaveProperty("humanDirectedIssueId");
+  });
+
+  it("observes cancellation and reassignment atomically, and an old request cannot authorize a new run", async () => {
+    const f = await seed(); const issue = await task(f); const first = await execution(f, issue, { human: true });
+    let release!: () => void; let ready!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
-    const ready = new Promise<void>((resolve) => { locked = resolve; });
-    const commentWrite = db.transaction(async (tx) => {
-      await issueService(db).addComment(issue.id, "Please proceed", { userId: "owner" }, { humanDirectedByUserId: "owner" }, tx);
-      observeLock = async (pid) => {
-        const [state] = await tx.execute(sql`select cardinality(pg_blocking_pids(${pid}::int)) > 0 as blocked`);
-        return state.blocked === true;
-      };
-      locked();
-      await held;
-    });
-    await Promise.race([ready, commentWrite]);
-    let started!: (pid: number) => void;
-    const waiter = new Promise<number>((resolve) => { started = resolve; });
+    const changed = new Promise<void>((resolve) => { ready = resolve; });
     const reassignment = db.transaction(async (tx) => {
-      const [backend] = await tx.execute(sql`select pg_backend_pid() as pid`);
-      started(Number(backend.pid));
+      await tx.update(heartbeatRuns).set({ status: "cancelled", errorCode: "issue_reassigned" }).where(eq(heartbeatRuns.id, first.run.id));
       await tx.update(issues).set({ assigneeAgentId: f.other.id }).where(eq(issues.id, issue.id));
+      ready(); await held;
     });
     try {
-      const pid = await Promise.race([waiter, reassignment.then(() => { throw new Error("Reassignment ended before publishing its backend"); })]);
-      const deadline = Date.now() + 5_000;
-      let blocked = false;
-      // Observe an actual PostgreSQL lock wait, not merely two queued promises.
-      while (Date.now() < deadline) {
-        // Reuse the lock holder's connection; a third pool slot is unnecessary.
-        if (await observeLock(pid)) { blocked = true; break; }
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-      expect(blocked).toBe(true);
-    } finally {
-      release();
-      await Promise.all([commentWrite, reassignment]);
-    }
-    expect(await db.select().from(issueHumanWorkGrants).where(eq(issueHumanWorkGrants.issueId, issue.id))).toHaveLength(0);
-    await issueService(db).addComment(issue.id, "New instruction", { userId: "owner" }, { humanDirectedByUserId: "owner" });
-    expect(await db.select().from(issueHumanWorkGrants).where(eq(issueHumanWorkGrants.issueId, issue.id)))
-      .toMatchObject([{ agentId: f.other.id, userId: "owner" }]);
+      await Promise.race([changed, reassignment]);
+      // With the reassignment deliberately held open, reads see the old committed
+      // assignment and live run together. After commit both are revoked.
+      expect(await resolve(f, issue, first.run.id)).toHaveProperty("humanDirectedIssueId", issue.id);
+    } finally { release(); await reassignment; }
+    expect(await resolve(f, issue, first.run.id)).not.toHaveProperty("humanDirectedIssueId");
+    await db.update(issues).set({ assigneeAgentId: f.agent.id }).where(eq(issues.id, issue.id));
+    expect(await resolve(f, issue, first.run.id)).not.toHaveProperty("humanDirectedIssueId");
+    const oldRetry = await launch(f, issue, { retryOfRunId: first.run.id });
+    expect(oldRetry.trustPreset).not.toHaveProperty("humanDirectedIssueId");
+    const automatic = await launch(f, issue);
+    expect(automatic.trustPreset).not.toHaveProperty("humanDirectedIssueId");
+    const human = await launch(f, issue, { human: true });
+    expect(human.trustPreset).toHaveProperty("humanDirectedIssueId", issue.id);
   });
 
-  it("rolls back grants with failed writes and never grants another company or agent", async () => {
-    const f = await seed(); const issue = await task(f);
+  it("does not authorize a cancelled chat or an uncommitted human request", async () => {
+    const f = await seed(); const issue = await task(f); const current = await execution(f, issue);
     await expect(db.transaction(async (tx) => {
-      await issueService(db).addComment(issue.id, "Rolled back", { userId: "owner" }, { humanDirectedByUserId: "owner" }, tx);
+      await tx.update(agentWakeupRequests).set({ requestedByActorType: "user", requestedByActorId: "owner" }).where(eq(agentWakeupRequests.id, current.wake.id));
+      expect(await resolve(f, issue, current.run.id)).not.toHaveProperty("humanDirectedIssueId");
       throw new Error("rollback sentinel");
     })).rejects.toThrow("rollback sentinel");
-    const resolution = resolveCoreTrustPreset({ companyId: f.companyId, agent: f.agent, issue });
-    expect(await withHumanDirectedWork(db, resolution, { companyId: f.companyId, agentId: f.agent.id, issueId: issue.id })).not.toHaveProperty("humanDirectedIssueId");
-    const directed = await task(f, true);
-    for (const scope of [{ companyId: randomUUID(), agentId: f.agent.id }, { companyId: f.companyId, agentId: f.other.id }]) {
-      expect(await withHumanDirectedWork(db, resolution, { ...scope, issueId: directed.id })).not.toHaveProperty("humanDirectedIssueId");
-    }
-  });
-
-  it("does not accept the grant field from client payloads", () => {
-    for (const [schema, payload] of [[createIssueSchema, { title: "Forged" }], [updateIssueSchema, { title: "Forged" }], [addIssueCommentSchema, { body: "Forged" }]] as const) {
-      const parsed = schema.safeParse({ ...payload, humanDirectedByUserId: "owner" });
-      if (parsed.success) expect(parsed.data).not.toHaveProperty("humanDirectedByUserId");
-    }
-  });
-
-  it("can replay the migration without changing existing grants", async () => {
-    const f = await seed(); const issue = await task(f, true);
-    const migration = readFileSync(new URL("../../../packages/db/src/migrations/0294_equal_echo.sql", import.meta.url), "utf8");
-    for (const statement of migration.split("--> statement-breakpoint")) await db.execute(sql.raw(statement));
-    expect(await db.select().from(issueHumanWorkGrants).where(and(eq(issueHumanWorkGrants.issueId, issue.id), eq(issueHumanWorkGrants.companyId, f.companyId)))).toHaveLength(1);
+    expect(await resolve(f, issue, current.run.id)).not.toHaveProperty("humanDirectedIssueId");
+    await db.update(issues).set({ conversationAgentId: f.agent.id, conversationUserId: "owner", conversationState: "active" }).where(eq(issues.id, issue.id));
+    expect(await resolve(f, issue, current.run.id)).toHaveProperty("humanDirectedIssueId", issue.id);
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, current.run.id));
+    expect(await resolve(f, issue, current.run.id)).not.toHaveProperty("humanDirectedIssueId");
   });
 });
