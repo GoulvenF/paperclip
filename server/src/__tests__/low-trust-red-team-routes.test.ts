@@ -929,19 +929,23 @@ describeEmbeddedPostgres(
       const fixture = await seedLowTrustFixture(db);
       await db.insert(authUsers).values({ id: "board-user", name: "Owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() });
       await db.insert(companyMemberships).values({ companyId: fixture.company.id, principalType: "user", principalId: "board-user", membershipRole: "owner", status: "active" });
+      // The fixture already occupies the agent's sole execution slot. Let the
+      // real board route enqueue work, then bind its queued run for HTTP checks.
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } })
+        .where(eq(agents.id, fixture.agents.lowTrust.id));
       const board = createApp(db, boardActor(fixture));
       const created = await request(board).post(`/api/companies/${fixture.company.id}/issues`)
-        .send({ title: "Human assigned outside intake", status: "backlog", assigneeAgentId: fixture.agents.lowTrust.id });
+        .send({ title: "Human assigned outside intake", status: "todo", assigneeAgentId: fixture.agents.lowTrust.id });
       expect(created.status, JSON.stringify(created.body)).toBe(201);
-      const [wake] = await db.insert(agentWakeupRequests).values({
-        companyId: fixture.company.id, agentId: fixture.agents.lowTrust.id, source: "assignment", status: "claimed",
-        requestedByActorType: "user", requestedByActorId: "board-user", payload: { issueId: created.body.id },
-      }).returning();
-      const [directRun] = await db.insert(heartbeatRuns).values({
-        companyId: fixture.company.id, agentId: fixture.agents.lowTrust.id,
-        status: "running", wakeupRequestId: wake.id, contextSnapshot: { issueId: created.body.id },
-      }).returning();
-      await db.update(agentWakeupRequests).set({ runId: directRun.id }).where(eq(agentWakeupRequests.id, wake.id));
+      const queued = () => db.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, fixture.company.id),
+        eq(agentWakeupRequests.agentId, fixture.agents.lowTrust.id),
+      )).then(rows => rows.find(row => row.payload?.issueId === created.body.id && row.runId));
+      await waitFor(async () => Boolean(await queued()));
+      const wake = (await queued())!;
+      expect(wake).toMatchObject({ requestedByActorType: "user", requestedByActorId: "board-user" });
+      const [directRun] = await db.update(heartbeatRuns).set({ status: "running" })
+        .where(eq(heartbeatRuns.id, wake.runId!)).returning();
       await db.update(issues).set({ status: "in_progress", checkoutRunId: directRun.id, executionRunId: directRun.id })
         .where(eq(issues.id, created.body.id));
       const directedAgent = createApp(db, { ...agentActor(fixture), runId: directRun.id });
