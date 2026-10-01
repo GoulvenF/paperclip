@@ -48,7 +48,9 @@ Chat or assign it a task outside its default intake boundary. Existing conversat
 identity authorizes owner chat. Ordinary tasks use the human requester already
 recorded on the run's wakeup requests, including coalesced requests. Each request
 retains its server-owned origin; plugin-attributed users do not count as board
-instructions. A board backlog assignment is retained as a completed assignment
+instructions. Legacy board assignment requests remain valid through their existing
+assignment source, reason, and human requester, without trusting old plugin human
+attribution. A board backlog assignment is retained as a completed assignment
 request with no run, so it authorizes the later system launch without starting
 work prematurely. No separate permission table or client-supplied human identity is needed. Responsible-user
 attribution, external connector sender attribution, and agent claims do not qualify.

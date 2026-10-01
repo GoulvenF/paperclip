@@ -12217,6 +12217,7 @@ export function issueRoutes(
         });
       }
 
+      await retainBacklogHumanAssignment(db, issue, actor);
       if (!serializationContext || !currentSerializedChild) {
         void queueIssueAssignmentWakeup({
           heartbeat,
@@ -12476,6 +12477,7 @@ export function issueRoutes(
           });
         }
 
+        await retainBacklogHumanAssignment(db, issue, actor);
         if (!serializedBlockedChildIds.has(issue.id)) {
           void queueIssueAssignmentWakeup({
             heartbeat,

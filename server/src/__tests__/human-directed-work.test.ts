@@ -117,6 +117,27 @@ const support = await getEmbeddedPostgresTestSupport();
       selectedEnvironmentDriver: "sandbox" })).rejects.toMatchObject({ details: { code: "low_trust_boundary_mismatch" } });
   });
 
+  it("preserves legacy board assignment requests through dispatch and retry without trusting old plugin attribution", async () => {
+    const f = await seed(); const issue = await task(f); const legacy = await execution(f, issue, { human: true });
+    await db.update(agentWakeupRequests).set({ source: "assignment", reason: "issue_assigned", payload: { issueId: issue.id } })
+      .where(eq(agentWakeupRequests.id, legacy.wake.id));
+    expect(await resolve(f, issue, legacy.run.id)).toHaveProperty("humanDirectedIssueId", issue.id);
+    const retry = await launch(f, issue, { retryOfRunId: legacy.run.id });
+    expect(retry.trustPreset).toHaveProperty("humanDirectedIssueId", issue.id);
+    for (const patch of [
+      { source: "automation", reason: "issue_commented" },
+      { requestedByActorType: "system" },
+      { idempotencyKey: "chat-inbound:legacy" },
+      { payload: { issueId: issue.id, _paperclipWakeContext: { source: "plugin:example" } } },
+    ]) {
+      await db.update(agentWakeupRequests).set(patch).where(eq(agentWakeupRequests.id, legacy.wake.id));
+      expect(await resolve(f, issue, legacy.run.id)).not.toHaveProperty("humanDirectedIssueId");
+      expect(await resolve(f, issue, retry.run.id)).not.toHaveProperty("humanDirectedIssueId");
+      await db.update(agentWakeupRequests).set({ source: "assignment", reason: "issue_assigned", requestedByActorType: "user",
+        idempotencyKey: null, payload: { issueId: issue.id } }).where(eq(agentWakeupRequests.id, legacy.wake.id));
+    }
+  });
+
   it("recognizes a coalesced human request for the same run and exact task", async () => {
     const f = await seed(); const issue = await task(f); const current = await execution(f, issue);
     expect(await resolve(f, issue, current.run.id)).not.toHaveProperty("humanDirectedIssueId");
