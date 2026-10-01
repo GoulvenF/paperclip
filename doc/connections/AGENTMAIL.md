@@ -19,6 +19,15 @@ Verified custom domains are selectable after checking the API key. Complete DNS
 setup in [AgentMail](https://docs.agentmail.to/custom-domains). Paperclip does not
 register domains or manage DNS.
 
+Failed provider requests retain their HTTP status, a fixed operation name, and
+an allowlisted [AgentMail error code](https://docs.agentmail.to/errors). For
+example, `create_inbox` with `missing_permission` differs from `limit_exceeded`.
+An HTTP 403 alone does not establish the cause. Missing or unrecognized codes
+appear as `unknown`. Error-body inspection is limited to 8 KiB and one second;
+malformed, larger, or stalled responses keep the original HTTP failure. Provider
+messages, suggested fixes, URLs, inbox identifiers, and credentials are excluded
+from these diagnostics. These diagnostics do not retry or suppress failures.
+
 The setup and Permissions page warn that an unrestricted inbox can receive mail
 from anyone. Configure sender allowlists in AgentMail; Paperclip does not manage
 or verify them. AgentMail controls new-message and reply lists separately. The

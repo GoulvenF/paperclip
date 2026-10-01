@@ -10174,7 +10174,14 @@ export function heartbeatService(
   }) {
     const leaseOwnerRun = await getRun(input.runId);
     if (leaseOwnerRun && isNativeRunnerOwnershipHeld(leaseOwnerRun)) return;
-    if (input.providerResourceDisposition === "destroy") {
+    // Recovery can finish workspace copy-back outside the executor's finally.
+    // Successful copy-back does not earn warm retention for a failed turn.
+    const status = leaseOwnerRun?.status ?? input.status;
+    const providerResourceDisposition = providerResourceDispositionForTerminalRun(
+      input.providerResourceDisposition,
+      status,
+    );
+    if (providerResourceDisposition === "destroy") {
       const closeResult = await (
         options.closeWarmNativeSessionsForRun ??
         (async ({ runId, reason }) => {
@@ -10242,9 +10249,9 @@ export function heartbeatService(
         heartbeatRunId: input.runId,
         companyId: input.companyId,
         agentId: input.agentId,
-        status: leaseReleaseStatusForRunStatus(input.status),
+        status: leaseReleaseStatusForRunStatus(status),
         failureReason: input.failureReason ?? undefined,
-        providerResourceDisposition: input.providerResourceDisposition,
+        providerResourceDisposition,
         nativeLifecycleTelemetry: input.nativeLifecycleTelemetry,
       })
       .catch((err) => {

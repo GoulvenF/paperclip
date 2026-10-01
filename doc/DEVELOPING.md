@@ -1246,6 +1246,9 @@ Only successful turns retain a live warm provider session. A structured failed
 or cancelled result must retire that session and collect its managed files before
 heartbeat stops the reusable sandbox. A later retry can resume the same sandbox
 without inheriting the stopped provider transport.
+The shared lease-release boundary rechecks the durable run status for recovery
+and ordinary teardown. Successful workspace copy-back alone must not keep a
+failed turn's sandbox running.
 
 Run the credential-free real-process restart suite with:
 
